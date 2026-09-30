@@ -46,9 +46,18 @@ case "$cmd" in
     # REQUIRE_SIGNATURE are optional build-time overrides for the three
     # -X-settable vars in cmd/libi-print-agent/main.go; the real release
     # pipeline (task 8.5) is expected to set VERSION and API_BASE, and to
-    # leave REQUIRE_SIGNATURE at its "true" default. Unset, a local dev
-    # build stays "dev"/empty-API-base/signature-required, same as before
-    # this flag support existed.
+    # leave REQUIRE_SIGNATURE at its "true" default except for an unsigned
+    # v0.x test build. Unset, a local dev build stays "dev"/empty-API-base/
+    # signature-required, same as before this flag support existed.
+    #
+    # -buildvcs=false: the Docker-image build path (this Mac; also the
+    # golang:1.23 container CI would fall back to if Go were ever missing)
+    # bind-mounts the repo into a container running as a different uid than
+    # the host, which `git`/`go build`'s VCS stamping rejects as "dubious
+    # ownership" (exit status 128). The build's version already comes from
+    # -X main.version above, so VCS stamping adds nothing worth fighting
+    # for; disabled unconditionally so local Docker builds and CI behave
+    # the same way regardless of which `go` (local or containerized) ran.
     mkdir -p "$ROOT_DIR/dist"
     ldflags="-H=windowsgui"
     if [ -n "${LIBI_PRINT_AGENT_VERSION:-}" ]; then
@@ -60,7 +69,7 @@ case "$cmd" in
     if [ -n "${LIBI_PRINT_AGENT_REQUIRE_SIGNATURE:-}" ]; then
       ldflags="$ldflags -X main.requireSignature=${LIBI_PRINT_AGENT_REQUIRE_SIGNATURE}"
     fi
-    GOOS=windows GOARCH=amd64 go_cmd build -ldflags "$ldflags" -o dist/libi-print-agent.exe ./cmd/libi-print-agent
+    GOOS=windows GOARCH=amd64 go_cmd build -buildvcs=false -ldflags "$ldflags" -o dist/libi-print-agent.exe ./cmd/libi-print-agent
     ;;
   vet-windows)
     # Type-checks the Windows-only build tags (DPAPI, winspool) that `vet`/`test`

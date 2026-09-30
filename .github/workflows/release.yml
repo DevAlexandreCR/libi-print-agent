@@ -1,24 +1,37 @@
-# Release: on a `vX.Y.Z` tag, build, sign and publish the agent .exe that
-# `GET /print-agents/version` points merchants at. See design.md D8/D12 and
-# the Migration Plan; tasks.md 8.5.
+# Release: on a `vX.Y.Z` tag, build, sign (when possible) and publish the
+# agent .exe that `GET /print-agents/version` points merchants at. See
+# design.md D8/D12 and the Migration Plan; tasks.md 8.5.
 #
 # Runs on windows-latest so signtool (part of the Windows SDK bundled with
 # that runner image) is available without a separate install step. Uses
 # scripts/build.sh directly (not `make`) because GNU Make is not guaranteed
 # on the Windows runner image; `shell: bash` steps run under the Git Bash
 # that ships with the runner, which scripts/build.sh already targets.
+# `shell: pwsh` is used for signtool and Get-FileHash, which are native
+# Windows/PowerShell tooling.
 #
-# Never publishes an unsigned .exe: the workflow fails before signing if
-# WINDOWS_CERT_PFX_BASE64 / WINDOWS_CERT_PASSWORD are unset, and
-# requireSignature is left at its compiled-in "true" default (not lowered
-# here), so an agent build from this pipeline always enforces Authenticode
-# verification on self-update.
+# Signing policy (see "Determine signing policy" below):
+#   - WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD secrets both set ->
+#     sign with signtool, verify with `signtool verify /pa`, build with
+#     requireSignature=true. This is the only path that may ever publish a
+#     v1.x+ release.
+#   - Secrets missing AND the tag is v0.x (a pre-GA test build) -> build
+#     with requireSignature=false, skip signing, and mark the release
+#     "UNSIGNED TEST BUILD" in its notes and the job summary. This exists
+#     so v0.0.1 etc. can be handed to internal testers before a
+#     code-signing certificate is purchased (see README "Code signing
+#     setup").
+#   - Secrets missing AND the tag is v1.x+ -> fail the job. A real
+#     (1.0.0+) release is never published unsigned.
 #
-# Alternative to the PFX + signtool step below: an EV certificate or a
-# cloud HSM signing service (e.g. Azure Trusted Signing) can replace the
-# "Decode signing certificate" + "Sign exe" steps with that provider's own
-# signing action/CLI; the rest of this workflow (build, verify, checksum,
-# publish, job summary) is unchanged either way.
+# Alternative to the PFX + signtool step below: an OV/EV certificate kept
+# on an HSM (as required by CA/Browser Forum rules since 2023 -- these
+# certs cannot be exported as a .pfx) can sign through a cloud signing
+# service's own GitHub Action instead, e.g. SSL.com eSigner
+# (sslcom/esigner-codesign) or Azure Trusted Signing. See the commented-out
+# example block in the "Sign and verify exe" step; the rest of this
+# workflow (build, verify, checksum, publish, job summary) is unchanged
+# either way.
 name: Release
 
 on:
@@ -46,8 +59,31 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "exe_name=libi-print-agent-${version}.exe" >> "$GITHUB_OUTPUT"
+          major="${version%%.*}"
+          {
+            echo "version=$version"
+            echo "major=$major"
+            echo "exe_name=libi-print-agent-${version}.exe"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Determine signing policy
+        id: policy
+        shell: bash
+        env:
+          HAS_CERT: ${{ (secrets.WINDOWS_CERT_PFX_BASE64 != '' && secrets.WINDOWS_CERT_PASSWORD != '') }}
+          MAJOR: ${{ steps.version.outputs.major }}
+        run: |
+          if [ "$HAS_CERT" = "true" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "require_signature=true" >> "$GITHUB_OUTPUT"
+          elif [ "$MAJOR" = "0" ]; then
+            echo "::warning::WINDOWS_CERT_PFX_BASE64/WINDOWS_CERT_PASSWORD are not set; publishing an UNSIGNED TEST BUILD because this is a v0.x tag (design.md D12 - a code-signing cert is a rollout prerequisite before any merchant install)."
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "require_signature=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::WINDOWS_CERT_PFX_BASE64/WINDOWS_CERT_PASSWORD are not set; refusing to publish an unsigned v${MAJOR}.x release (design.md D12 - requireSignature stays true for any 1.0.0+ release)."
+            exit 1
+          fi
 
       - name: go test
         shell: bash
@@ -57,18 +93,12 @@ jobs:
         shell: bash
         env:
           LIBI_PRINT_AGENT_VERSION: ${{ steps.version.outputs.version }}
-          LIBI_PRINT_AGENT_API_BASE: ${{ vars.LIBI_PRINT_AGENT_API_BASE }}
+          LIBI_PRINT_AGENT_API_BASE: ${{ vars.LIBI_PRINT_AGENT_API_BASE || 'https://api.libibot.com/api' }}
+          LIBI_PRINT_AGENT_REQUIRE_SIGNATURE: ${{ steps.policy.outputs.require_signature }}
         run: ./scripts/build.sh build-windows
 
-      - name: Verify signing secrets are present
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.WINDOWS_CERT_PFX_BASE64 }}" ] || [ -z "${{ secrets.WINDOWS_CERT_PASSWORD }}" ]; then
-            echo "::error::WINDOWS_CERT_PFX_BASE64/WINDOWS_CERT_PASSWORD are not set; refusing to publish an unsigned release (design.md D12 - requireSignature stays true)."
-            exit 1
-          fi
-
       - name: Decode signing certificate
+        if: steps.policy.outputs.sign == 'true'
         shell: pwsh
         env:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
@@ -77,6 +107,7 @@ jobs:
           [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", $bytes)
 
       - name: Sign and verify exe
+        if: steps.policy.outputs.sign == 'true'
         shell: pwsh
         env:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
@@ -95,6 +126,25 @@ jobs:
           & $signtool verify /pa dist\libi-print-agent.exe
           if ($LASTEXITCODE -ne 0) { throw "signtool verify /pa failed" }
 
+      # Cloud-HSM alternative to the PFX + signtool step above (OV/EV certs
+      # issued since 2023 live on an HSM and cannot be exported as a .pfx).
+      # Uncomment this step, delete "Decode signing certificate" and "Sign
+      # and verify exe" above, and add ES_USERNAME/ES_PASSWORD/
+      # ES_CREDENTIAL_ID/ES_TOTP_SECRET as repo secrets. See README "Code
+      # signing setup".
+      #
+      # - name: Sign exe with SSL.com eSigner
+      #   if: steps.policy.outputs.sign == 'true'
+      #   uses: sslcom/esigner-codesign@develop
+      #   with:
+      #     command: sign
+      #     username: ${{ secrets.ES_USERNAME }}
+      #     password: ${{ secrets.ES_PASSWORD }}
+      #     credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+      #     totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+      #     file_path: dist\libi-print-agent.exe
+      #     environment_name: PROD
+
       - name: Remove certificate file
         if: always()
         shell: pwsh
@@ -106,18 +156,50 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           $exeName = "${{ steps.version.outputs.exe_name }}"
+          # Two copies of the same bytes: the versioned name (what
+          # PRINT_AGENT_LATEST_URL and self-update point at) and the stable
+          # "libi-print-agent.exe" name, so
+          # /releases/latest/download/libi-print-agent.exe always resolves
+          # to the newest release regardless of version.
           Copy-Item dist\libi-print-agent.exe "release\$exeName"
+          Copy-Item dist\libi-print-agent.exe "release\libi-print-agent.exe"
           $hash = (Get-FileHash "release\$exeName" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -Path "release\SHA256SUMS" -Value "$hash  $exeName" -NoNewline:$false
+          Set-Content -Path "release\SHA256SUMS" -Value @(
+            "$hash  $exeName"
+            "$hash  libi-print-agent.exe"
+          )
           Add-Content -Path $env:GITHUB_OUTPUT -Value "sha256=$hash"
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ steps.policy.outputs.sign }}" != "true" ]; then
+            cat > release/NOTES.md <<'EOF'
+          > [!WARNING]
+          > **UNSIGNED TEST BUILD.** This v0.x release was published without
+          > a code-signing certificate (no `WINDOWS_CERT_PFX_BASE64`/
+          > `WINDOWS_CERT_PASSWORD` configured on this repo). Windows
+          > SmartScreen will warn on launch. Internal/testing use only --
+          > never distribute this build to a merchant.
+
+          EOF
+          else
+            : > release/NOTES.md
+          fi
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          name: LiBi Print Agent ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          body_path: release/NOTES.md
+          generate_release_notes: true
           files: |
             release/${{ steps.version.outputs.exe_name }}
+            release/libi-print-agent.exe
             release/SHA256SUMS
-          generate_release_notes: true
 
       - name: Job summary
         shell: bash
@@ -125,11 +207,19 @@ jobs:
           {
             echo "## Set these on the API server (see README.md)"
             echo ""
+            if [ "${{ steps.policy.outputs.sign }}" != "true" ]; then
+              echo "**UNSIGNED TEST BUILD** -- published without a code-signing certificate (v0.x tag, no signing secrets configured). Do not point production merchants at this build."
+              echo ""
+            fi
             echo "| Variable | Value |"
             echo "|---|---|"
             echo "| \`PRINT_AGENT_LATEST_VERSION\` | \`${{ steps.version.outputs.version }}\` |"
             echo "| \`PRINT_AGENT_LATEST_URL\` | \`https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.version.outputs.exe_name }}\` |"
             echo "| \`PRINT_AGENT_LATEST_SHA256\` | \`${{ steps.sums.outputs.sha256 }}\` |"
             echo ""
-            echo "Also update \`VITE_PRINT_AGENT_DOWNLOAD_URL\` on the web app to the same release URL."
+            echo "Also set on the web app (same value works for every future release; it always resolves to the newest one):"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|---|---|"
+            echo "| \`VITE_PRINT_AGENT_DOWNLOAD_URL\` | \`https://github.com/${{ github.repository }}/releases/latest/download/libi-print-agent.exe\` |"
           } >> "$GITHUB_STEP_SUMMARY"

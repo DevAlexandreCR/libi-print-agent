@@ -59,21 +59,21 @@ matching `v*.*.*` (e.g. `v1.2.0`) is pushed:
 1. Runs `go test ./...`.
 2. Builds `dist/libi-print-agent.exe` for `windows/amd64` with
    `-X main.version=<tag without the leading v>` and
-   `-X main.defaultAPIBase=<the LIBI_PRINT_AGENT_API_BASE repo variable>`.
-   `requireSignature` is left at its compiled-in `true` default.
+   `-X main.defaultAPIBase=<the LIBI_PRINT_AGENT_API_BASE repo variable,
+   defaulting to https://api.libibot.com/api>`.
 3. Signs `dist/libi-print-agent.exe` with `signtool sign` using an RFC3161
-   timestamp, then verifies with `signtool verify /pa`.
-4. Computes the SHA-256 of the signed exe, renames it to
-   `libi-print-agent-<version>.exe`, and publishes a GitHub Release with
-   that file plus a `SHA256SUMS` file.
-5. Prints the three values below in the job summary.
-
-**The release fails, and nothing is published, if the signing secrets are
-missing.** An unsigned build is never released (see Signing prerequisites).
+   timestamp, then verifies with `signtool verify /pa` — **only if** the
+   signing secrets below are configured (see "Unsigned v0.x test builds").
+4. Computes the SHA-256 of the (signed, or unsigned test) exe, and
+   publishes a GitHub Release with three files: `libi-print-agent-
+   <version>.exe`, the stable-named `libi-print-agent.exe` (always the
+   newest release — see "Stable download URL"), and `SHA256SUMS`.
+5. Prints the values below, plus the stable download URL, in the job
+   summary.
 
 ### To cut a release
 
-1. Push a tag: `git tag v1.3.0 && git push origin v1.3.0`.
+1. Push a tag: `git tag v0.0.2 && git push origin v0.0.2`.
 2. Wait for the `release` workflow to finish; open its job summary.
 3. Set on the API server's environment (see the main repo's
    `libi-api/.env` / deployment config):
@@ -83,14 +83,42 @@ missing.** An unsigned build is never released (see Signing prerequisites).
 
    These are served by `GET /print-agents/version` and are what a paired
    agent's self-update check compares against.
-4. Set `VITE_PRINT_AGENT_DOWNLOAD_URL` on `libi-web` to the same release
-   URL (the merchant-facing settings page links it for the initial
-   install).
+4. Set `VITE_PRINT_AGENT_DOWNLOAD_URL` on `libi-web` to the stable
+   download URL below (the merchant-facing settings page links it for the
+   initial install; it defaults to that same URL when unset, so this step
+   is only needed to override it).
+
+### Stable download URL
+
+Every release also publishes the same exe under a fixed, version-less
+name, so a bookmark or an env var never has to change on a new release:
+
+```
+https://github.com/DevAlexandreCR/libi-print-agent/releases/latest/download/libi-print-agent.exe
+```
+
+`/releases/latest/` only resolves to a release that is **not** marked
+draft or prerelease — the workflow always publishes a normal release, so
+this keeps working for every tag, signed or not.
+
+### Unsigned v0.x test builds
+
+`WINDOWS_CERT_PFX_BASE64` / `WINDOWS_CERT_PASSWORD` are optional while the
+repo is still on `v0.x` tags:
+
+- **Secrets present** → the release is signed and verified as described
+  above, built with `requireSignature=true`. This is required for every
+  `v1.0.0+` tag; the workflow **fails the job and publishes nothing** for
+  a 1.x+ tag if the secrets are missing (design.md D12 — a code-signing
+  certificate is a rollout prerequisite before any merchant install).
+- **Secrets absent and the tag is `v0.x`** → the workflow skips signing,
+  builds with `LIBI_PRINT_AGENT_REQUIRE_SIGNATURE=false` (the agent's own
+  self-update then skips Authenticode verification too — it still always
+  verifies the sha256 first), and marks the release notes and job summary
+  **"UNSIGNED TEST BUILD"**. Use these only for internal testing, never
+  for a merchant install (see SmartScreen below).
 
 ### Signing prerequisites
-
-A code-signing certificate is a rollout prerequisite (design.md D12) — the
-release workflow refuses to run without it:
 
 - `WINDOWS_CERT_PFX_BASE64` — the code-signing certificate, PFX format,
   base64-encoded (`base64 -w0 cert.pfx` or `[Convert]::ToBase64String(...)`
@@ -98,14 +126,39 @@ release workflow refuses to run without it:
 - `WINDOWS_CERT_PASSWORD` — the PFX's password, also a secret.
 - `LIBI_PRINT_AGENT_API_BASE` — the production API base URL baked into the
   build, stored as a GitHub Actions **repo variable** (not a secret; it is
-  not sensitive).
+  not sensitive). Optional — defaults to `https://api.libibot.com/api`.
 
-An EV certificate or a cloud HSM signing service (e.g. **Azure Trusted
-Signing**) can replace the PFX + `signtool sign` step entirely — swap that
-provider's signing action/CLI into the "Sign and verify exe" step; the
-rest of the pipeline (build, verify, checksum, publish, job summary) does
-not need to change. EV/cloud-HSM signing also clears SmartScreen reputation
-faster than a standard OV certificate.
+### Code signing setup
+
+A code-signing certificate is a rollout prerequisite (design.md D12)
+before the first merchant install, and clears Windows SmartScreen
+reputation over time (see below). Any OV or EV certificate works for
+this — OV is cheaper and sufficient; EV/cloud-HSM signing just clears
+SmartScreen reputation faster.
+
+Any OV/EV certificate issued since 2023 (CA/Browser Forum baseline
+requirements) must be held on a hardware token or an HSM and **cannot be
+exported as a `.pfx`** — so for a newly purchased cert, the PFX +
+`signtool` step in `release.yml` will not apply; use a cloud signing
+service instead:
+
+1. Buy an OV (or EV) code-signing certificate from a CA that offers cloud
+   / HSM-backed signing — e.g. **SSL.com eSigner** — and complete their
+   business-identity validation (this takes real time; start it before
+   it blocks a release).
+2. Add `ES_USERNAME`, `ES_PASSWORD`, `ES_CREDENTIAL_ID`, `ES_TOTP_SECRET`
+   as GitHub Actions secrets on this repo (from the SSL.com eSigner
+   account setup).
+3. In `release.yml`, delete the "Decode signing certificate" and "Sign
+   and verify exe" steps and uncomment the commented-out
+   `sslcom/esigner-codesign` step right below them (it is left in place,
+   pre-wired to those same secrets, specifically so this swap doesn't
+   require re-deriving the step).
+4. Push a `v1.0.0+` tag — the workflow will now sign every release, and
+   nothing below `v1.0.0` needs to stay unsigned once this is done.
+
+Azure Trusted Signing is an equivalent alternative; swap in its own
+action/CLI the same way.
 
 ### SmartScreen
 

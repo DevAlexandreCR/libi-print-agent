@@ -8,3 +8,6 @@
 
 # Editor/OS cruft
 .DS_Store
+
+# Local assistant notes
+/.claude/
