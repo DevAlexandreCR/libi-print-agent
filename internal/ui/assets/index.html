@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiBi Impresión</title>
+<style>
+  :root {
+    --libi-purple: #6d28d9;
+    --libi-purple-dark: #4c1d95;
+    --ok: #15803d;
+    --bad: #b91c1c;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+    color: var(--libi-purple-dark);
+  }
+  .subtitle { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
+  input[type=text], input[type=tel] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 15px;
+  }
+  input#code {
+    font-size: 28px;
+    letter-spacing: 6px;
+    text-align: center;
+    font-weight: 700;
+  }
+  select {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  button {
+    margin-top: 18px;
+    width: 100%;
+    padding: 11px;
+    border: none;
+    border-radius: 8px;
+    background: var(--libi-purple);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  button.secondary {
+    background: transparent;
+    color: var(--bad);
+    border: 1px solid var(--border);
+  }
+  button.ghost {
+    background: transparent;
+    color: var(--libi-purple-dark);
+    border: 1px solid var(--border);
+  }
+  .error {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #fef2f2;
+    color: var(--bad);
+    font-size: 13px;
+    display: none;
+  }
+  .ok-msg {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f0fdf4;
+    color: var(--ok);
+    font-size: 13px;
+    display: none;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .row:last-child { border-bottom: none; }
+  .row .k { color: var(--muted); }
+  .row .v { font-weight: 600; text-align: right; }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .badge.connected { background: #f0fdf4; color: var(--ok); }
+  .badge.disconnected { background: #fef2f2; color: var(--bad); }
+  .printers { margin-top: 4px; font-size: 13px; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .hidden { display: none !important; }
+  .loading { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="card" id="app">
+  <div class="loading" id="loading">Cargando…</div>
+</div>
+
+<script>
+(function () {
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var app = document.getElementById('app');
+
+  function api(path, opts) {
+    opts = opts || {};
+    var url = path + (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(token);
+    var init = { method: opts.method || 'GET', headers: {} };
+    if (opts.body) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(opts.body);
+    }
+    return fetch(url, init).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) {
+          var err = new Error(data.message || ('Error ' + res.status));
+          err.status = res.status;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function fmtDate(s) {
+    if (!s) return 'Nunca';
+    try {
+      var d = new Date(s);
+      return d.toLocaleString('es-CO');
+    } catch (e) { return s; }
+  }
+
+  function renderUnpaired(status) {
+    app.innerHTML =
+      '<h1>Vincular impresora LiBi</h1>' +
+      '<p class="subtitle">Ingresa el código de 6 dígitos que te dio LiBi.</p>' +
+      '<label for="code">Código de vinculación</label>' +
+      '<input id="code" type="tel" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off">' +
+      '<label for="name">Nombre de este equipo</label>' +
+      '<input id="name" type="text" maxlength="60">' +
+      '<button id="pairBtn">Vincular</button>' +
+      '<div class="error" id="err"></div>';
+
+    document.getElementById('name').value = status.hostname || '';
+    var code = document.getElementById('code');
+    code.addEventListener('input', function () {
+      code.value = code.value.replace(/[^0-9]/g, '').slice(0, 6);
+    });
+
+    document.getElementById('pairBtn').addEventListener('click', function () {
+      var errEl = document.getElementById('err');
+      errEl.style.display = 'none';
+      var codeVal = code.value.trim();
+      var nameVal = document.getElementById('name').value.trim();
+      if (codeVal.length !== 6) {
+        errEl.textContent = 'El código debe tener 6 dígitos.';
+        errEl.style.display = 'block';
+        return;
+      }
+      var btn = document.getElementById('pairBtn');
+      btn.disabled = true;
+      btn.textContent = 'Vinculando…';
+      api('/api/pair', { method: 'POST', body: { code: codeVal, name: nameVal } })
+        .then(function () { load(); })
+        .catch(function (e) {
+          btn.disabled = false;
+          btn.textContent = 'Vincular';
+          errEl.textContent = e.message;
+          errEl.style.display = 'block';
+        });
+    });
+  }
+
+  function renderPaired(status) {
+    var badgeClass = status.connected ? 'connected' : 'disconnected';
+    var badgeText = status.connected ? 'Conectado' : 'Sin conexión';
+
+    var printerOptions = (status.printers || []).map(function (p) {
+      var label = p.name + (p.isDefault ? ' (predeterminada)' : '');
+      return '<option value="' + escapeHtml(p.name) + '">' + escapeHtml(label) + '</option>';
+    }).join('');
+
+    var printerList = (status.printers || []).map(function (p) {
+      return escapeHtml(p.name) + (p.isDefault ? ' (predeterminada)' : '');
+    }).join(', ') || 'Ninguna detectada';
+
+    app.innerHTML =
+      '<h1>' + escapeHtml(status.name || 'Este equipo') + '</h1>' +
+      '<p class="subtitle">LiBi Impresión</p>' +
+      '<div class="row"><span class="k">Estado</span><span class="v"><span class="badge ' + badgeClass + '">' + badgeText + '</span></span></div>' +
+      (status.connected ? '' : '<div class="hint">Último error: ' + escapeHtml(status.lastError || '—') + '</div>') +
+      '<div class="row"><span class="k">Último ticket impreso</span><span class="v">' + fmtDate(status.lastPrintedAt) + '</span></div>' +
+      '<div class="row"><span class="k">Impresoras</span><span class="v"></span></div>' +
+      '<div class="printers">' + escapeHtml(printerList) + '</div>' +
+      '<label for="printerSelect">Probar una impresora</label>' +
+      '<select id="printerSelect">' + printerOptions + '</select>' +
+      '<button id="testBtn" class="ghost">Imprimir prueba</button>' +
+      '<div class="ok-msg" id="okMsg"></div>' +
+      '<div class="error" id="err"></div>' +
+      '<button id="unpairBtn" class="secondary">Desvincular</button>';
+
+    document.getElementById('testBtn').addEventListener('click', function () {
+      var errEl = document.getElementById('err');
+      var okEl = document.getElementById('okMsg');
+      errEl.style.display = 'none';
+      okEl.style.display = 'none';
+      var printer = document.getElementById('printerSelect').value;
+      if (!printer) return;
+      api('/api/test-print', { method: 'POST', body: { printer: printer } })
+        .then(function () {
+          okEl.textContent = 'Ticket de prueba enviado a ' + printer + '.';
+          okEl.style.display = 'block';
+        })
+        .catch(function (e) {
+          errEl.textContent = e.message;
+          errEl.style.display = 'block';
+        });
+    });
+
+    document.getElementById('unpairBtn').addEventListener('click', function () {
+      if (!confirm('¿Desvincular este equipo? Dejará de imprimir tickets de LiBi hasta que lo vincules de nuevo.')) return;
+      api('/api/unpair', { method: 'POST' }).then(function () { load(); });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // lastPairedMode tracks which view is on screen so the periodic poll
+  // does not clobber an in-progress "vincular" form (the user typing a
+  // code) every few seconds; the paired view is cheap to re-render since
+  // nothing on it holds transient user input worth preserving except the
+  // printer <select>, whose selection is restored below.
+  var lastPairedMode = null;
+
+  function load() {
+    api('/api/status').then(function (status) {
+      if (status.paired) {
+        var keepPrinter = lastPairedMode === true && document.getElementById('printerSelect')
+          ? document.getElementById('printerSelect').value : null;
+        renderPaired(status);
+        if (keepPrinter) {
+          var sel = document.getElementById('printerSelect');
+          if (sel && keepPrinter) sel.value = keepPrinter;
+        }
+        lastPairedMode = true;
+      } else if (lastPairedMode !== false) {
+        renderUnpaired(status);
+        lastPairedMode = false;
+      }
+    }).catch(function (e) {
+      app.innerHTML = '<div class="error" style="display:block">No se pudo cargar el estado: ' + escapeHtml(e.message) + '</div>';
+    });
+  }
+
+  load();
+  setInterval(load, 4000);
+})();
+</script>
+</body>
+</html>

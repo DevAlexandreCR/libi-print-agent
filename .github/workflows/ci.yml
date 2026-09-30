@@ -1,0 +1,53 @@
+# CI: format/vet/test on every push and PR, plus a cross-compiled Windows
+# build (unsigned) so a broken Windows-only build tag is caught before a
+# release tag is ever pushed. See design.md D8 and tasks.md 8.5.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # gofmt has no Makefile target; run it directly instead of adding one
+      # just for CI.
+      - name: gofmt check
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt would reformat:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: make vet
+
+      - name: go test
+        run: make test
+
+      # Type-checks the Windows-only build tags (DPAPI, winspool) that the
+      # steps above never touch on this runner.
+      - name: go vet (windows)
+        run: make vet-windows
+
+      - name: build unsigned windows exe
+        run: make build-windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libi-print-agent-unsigned
+          path: dist/libi-print-agent.exe
+          retention-days: 7

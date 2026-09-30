@@ -1,0 +1,135 @@
+# Release: on a `vX.Y.Z` tag, build, sign and publish the agent .exe that
+# `GET /print-agents/version` points merchants at. See design.md D8/D12 and
+# the Migration Plan; tasks.md 8.5.
+#
+# Runs on windows-latest so signtool (part of the Windows SDK bundled with
+# that runner image) is available without a separate install step. Uses
+# scripts/build.sh directly (not `make`) because GNU Make is not guaranteed
+# on the Windows runner image; `shell: bash` steps run under the Git Bash
+# that ships with the runner, which scripts/build.sh already targets.
+#
+# Never publishes an unsigned .exe: the workflow fails before signing if
+# WINDOWS_CERT_PFX_BASE64 / WINDOWS_CERT_PASSWORD are unset, and
+# requireSignature is left at its compiled-in "true" default (not lowered
+# here), so an agent build from this pipeline always enforces Authenticode
+# verification on self-update.
+#
+# Alternative to the PFX + signtool step below: an EV certificate or a
+# cloud HSM signing service (e.g. Azure Trusted Signing) can replace the
+# "Decode signing certificate" + "Sign exe" steps with that provider's own
+# signing action/CLI; the rest of this workflow (build, verify, checksum,
+# publish, job summary) is unchanged either way.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Derive version from tag
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "exe_name=libi-print-agent-${version}.exe" >> "$GITHUB_OUTPUT"
+
+      - name: go test
+        shell: bash
+        run: ./scripts/build.sh test
+
+      - name: Build windows exe
+        shell: bash
+        env:
+          LIBI_PRINT_AGENT_VERSION: ${{ steps.version.outputs.version }}
+          LIBI_PRINT_AGENT_API_BASE: ${{ vars.LIBI_PRINT_AGENT_API_BASE }}
+        run: ./scripts/build.sh build-windows
+
+      - name: Verify signing secrets are present
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.WINDOWS_CERT_PFX_BASE64 }}" ] || [ -z "${{ secrets.WINDOWS_CERT_PASSWORD }}" ]; then
+            echo "::error::WINDOWS_CERT_PFX_BASE64/WINDOWS_CERT_PASSWORD are not set; refusing to publish an unsigned release (design.md D12 - requireSignature stays true)."
+            exit 1
+          fi
+
+      - name: Decode signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64)
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", $bytes)
+
+      - name: Sign and verify exe
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found on this runner image" }
+
+          & $signtool sign /f "$env:RUNNER_TEMP\codesign.pfx" /p "$env:WINDOWS_CERT_PASSWORD" `
+            /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
+            /d "LiBi Print Agent" dist\libi-print-agent.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+
+          & $signtool verify /pa dist\libi-print-agent.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify /pa failed" }
+
+      - name: Remove certificate file
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\codesign.pfx"
+
+      - name: Rename and checksum
+        id: sums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $exeName = "${{ steps.version.outputs.exe_name }}"
+          Copy-Item dist\libi-print-agent.exe "release\$exeName"
+          $hash = (Get-FileHash "release\$exeName" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "release\SHA256SUMS" -Value "$hash  $exeName" -NoNewline:$false
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha256=$hash"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/${{ steps.version.outputs.exe_name }}
+            release/SHA256SUMS
+          generate_release_notes: true
+
+      - name: Job summary
+        shell: bash
+        run: |
+          {
+            echo "## Set these on the API server (see README.md)"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|---|---|"
+            echo "| \`PRINT_AGENT_LATEST_VERSION\` | \`${{ steps.version.outputs.version }}\` |"
+            echo "| \`PRINT_AGENT_LATEST_URL\` | \`https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.version.outputs.exe_name }}\` |"
+            echo "| \`PRINT_AGENT_LATEST_SHA256\` | \`${{ steps.sums.outputs.sha256 }}\` |"
+            echo ""
+            echo "Also update \`VITE_PRINT_AGENT_DOWNLOAD_URL\` on the web app to the same release URL."
+          } >> "$GITHUB_STEP_SUMMARY"
