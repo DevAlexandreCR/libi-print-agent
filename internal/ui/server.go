@@ -35,6 +35,11 @@ type Runner interface {
 	Hostname() string
 	Printers() ([]spool.PrinterInfo, error)
 	TestPrint(printerName string) error
+	// APIBase returns the API base URL to use for a pairing attempt right
+	// now - the effective base (see config.EffectiveAPIBase), resolved
+	// fresh rather than cached, so it reflects any Pair/Unpair that has
+	// happened in this process since the Server was constructed.
+	APIBase() string
 	Pair(ctx context.Context, apiBaseURL, code, name string) error
 	Unpair() error
 }
@@ -54,35 +59,33 @@ type Status struct {
 // header check that blocks DNS rebinding. Construct with New, bind a
 // listener with Listen, then block in Serve.
 type Server struct {
-	runner     Runner
-	apiBaseURL string
-	version    string
-	logger     *slog.Logger
-	token      string
+	runner  Runner
+	version string
+	logger  *slog.Logger
+	token   string
 
 	port          int
 	expectedHosts map[string]struct{}
 	mux           *http.ServeMux
 }
 
-// New builds a Server with a fresh random token. apiBaseURL is the base URL
-// used for a pairing attempt from the page (the build's compiled-in
-// default, or whatever is already in the agent's config). version is the
-// build's version string (main.version, "dev" if unset at build time);
-// surfaced read-only in /api/status so the status page's footer can show
-// which build is running.
-func New(runner Runner, apiBaseURL, version string, logger *slog.Logger) (*Server, error) {
+// New builds a Server with a fresh random token. The base URL used for a
+// pairing attempt from the page is resolved fresh from runner.APIBase() on
+// every attempt rather than captured here, so it cannot go stale (see
+// Runner.APIBase). version is the build's version string (main.version,
+// "dev" if unset at build time); surfaced read-only in /api/status so the
+// status page's footer can show which build is running.
+func New(runner Runner, version string, logger *slog.Logger) (*Server, error) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, fmt.Errorf("ui: generate token: %w", err)
 	}
 
 	s := &Server{
-		runner:     runner,
-		apiBaseURL: apiBaseURL,
-		version:    version,
-		logger:     logger,
-		token:      hex.EncodeToString(tokenBytes),
+		runner:  runner,
+		version: version,
+		logger:  logger,
+		token:   hex.EncodeToString(tokenBytes),
 	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/", s.requireAuth(s.handleIndex))
@@ -249,7 +252,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	if err := s.runner.Pair(ctx, s.apiBaseURL, req.Code, req.Name); err != nil {
+	if err := s.runner.Pair(ctx, s.runner.APIBase(), req.Code, req.Name); err != nil {
 		status, message := mapPairError(err)
 		writeJSON(w, status, errorResponse{Message: message})
 		return

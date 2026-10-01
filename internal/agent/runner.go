@@ -29,12 +29,13 @@ var (
 // connect and on every wake-up, print sequentially, ack, and fall back to
 // the unpaired state on a 401.
 type Runner struct {
-	dir       string
-	protector config.Protector
-	printer   spool.Printer
-	client    *api.Client
-	logger    *slog.Logger
-	version   string
+	dir            string
+	protector      config.Protector
+	printer        spool.Printer
+	client         *api.Client
+	logger         *slog.Logger
+	version        string
+	defaultAPIBase string // build's compiled-in default; see APIBase
 
 	mu  sync.Mutex // guards cfg; client's own fields have their own lock
 	cfg *config.Config
@@ -50,8 +51,9 @@ type Runner struct {
 
 // NewRunner builds a Runner over an already-loaded Config (config.Load) and
 // creates/loads this agent's on-disk job ledger under dir (normally
-// config.Dir()). A nil httpClient uses api.NewClient's default.
-func NewRunner(dir string, cfg *config.Config, protector config.Protector, printer spool.Printer, httpClient *http.Client, version string, logger *slog.Logger) (*Runner, error) {
+// config.Dir()). A nil httpClient uses api.NewClient's default. defaultAPIBase
+// is the build's compiled-in API base (main.defaultAPIBase); see APIBase.
+func NewRunner(dir string, cfg *config.Config, protector config.Protector, printer spool.Printer, httpClient *http.Client, version, defaultAPIBase string, logger *slog.Logger) (*Runner, error) {
 	l, err := newLedger(dir)
 	if err != nil {
 		return nil, fmt.Errorf("agent: load ledger: %w", err)
@@ -61,17 +63,30 @@ func NewRunner(dir string, cfg *config.Config, protector config.Protector, print
 	client.SetToken(cfg.Token)
 
 	r := &Runner{
-		dir:       dir,
-		protector: protector,
-		printer:   printer,
-		client:    client,
-		logger:    logger,
-		version:   version,
-		cfg:       cfg,
-		ledger:    l,
+		dir:            dir,
+		protector:      protector,
+		printer:        printer,
+		client:         client,
+		logger:         logger,
+		version:        version,
+		defaultAPIBase: defaultAPIBase,
+		cfg:            cfg,
+		ledger:         l,
 	}
 	r.status.current = Status{Paired: cfg.Paired()}
 	return r, nil
+}
+
+// APIBase returns the effective API base URL for this runner's current
+// config (config.EffectiveAPIBase): the saved APIBaseURL while paired, or
+// this build's compiled-in default otherwise. Callers that need a base URL
+// outside of an active paired session - the UI's pairing handler and the
+// update checker - must call this each time rather than caching a value,
+// since Pair/Unpair/handleUnauthorized can change the answer mid-process.
+func (r *Runner) APIBase() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return config.EffectiveAPIBase(r.cfg, r.defaultAPIBase)
 }
 
 // OnStatusChange registers fn to be called with every Status change. Set it
@@ -293,7 +308,10 @@ func (r *Runner) safetyPullLoop(ctx context.Context, trigger func()) {
 // the session so the others unwind.
 func (r *Runner) handleUnauthorized() {
 	r.mu.Lock()
-	cleared := &config.Config{APIBaseURL: r.cfg.APIBaseURL}
+	// APIBaseURL is cleared along with the token/identity: it was only ever
+	// meaningful as "the server this token belongs to" (see APIBase), and a
+	// revoked token means that pairing is over.
+	cleared := &config.Config{}
 	r.cfg = cleared
 	r.mu.Unlock()
 

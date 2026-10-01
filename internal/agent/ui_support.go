@@ -47,7 +47,12 @@ func (r *Runner) TestPrint(printerName string) error {
 // until the merchant admin revokes or reassigns it from the panel.
 func (r *Runner) Unpair() error {
 	r.mu.Lock()
-	cleared := &config.Config{APIBaseURL: r.cfg.APIBaseURL}
+	// APIBaseURL is cleared too: it is only meaningful as "the server the
+	// cleared token belonged to" (see APIBase), and keeping it around would
+	// let a stale LAN/test base survive into a later pairing attempt,
+	// including one made from a different build (design note: a test build's
+	// base outliving unpair into a production install).
+	cleared := &config.Config{}
 	r.cfg = cleared
 	r.mu.Unlock()
 

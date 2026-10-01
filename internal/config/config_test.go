@@ -82,6 +82,33 @@ func TestDirHonorsOverride(t *testing.T) {
 	}
 }
 
+func TestEffectiveAPIBaseUnpairedConfigFallsBackToDefaultDespiteStaleSavedBase(t *testing.T) {
+	// Regression: an unpaired config can still carry an APIBaseURL left
+	// over from a previous build/pairing (e.g. a LAN test build's saved
+	// base surviving into a production build after unpair). It must not be
+	// preferred over the compiled-in default.
+	cfg := &Config{APIBaseURL: "http://192.168.1.19:3001/api"}
+	got := EffectiveAPIBase(cfg, "https://api.libibot.com/api")
+	if got != "https://api.libibot.com/api" {
+		t.Fatalf("EffectiveAPIBase() = %q, want the compiled-in default", got)
+	}
+}
+
+func TestEffectiveAPIBasePairedConfigUsesSavedBase(t *testing.T) {
+	cfg := &Config{APIBaseURL: "http://192.168.1.19:3001/api", Token: "tok-1", AgentID: "a1"}
+	got := EffectiveAPIBase(cfg, "https://api.libibot.com/api")
+	if got != "http://192.168.1.19:3001/api" {
+		t.Fatalf("EffectiveAPIBase() = %q, want the saved base", got)
+	}
+}
+
+func TestEffectiveAPIBaseNilConfigFallsBackToDefault(t *testing.T) {
+	got := EffectiveAPIBase(nil, "https://api.libibot.com/api")
+	if got != "https://api.libibot.com/api" {
+		t.Fatalf("EffectiveAPIBase() = %q, want the compiled-in default", got)
+	}
+}
+
 // dpapiLikeProtector is a reversible but non-identity Protector, so the
 // plaintext-on-disk test above is meaningful (PlainProtector would trivially
 // "contain" the secret).

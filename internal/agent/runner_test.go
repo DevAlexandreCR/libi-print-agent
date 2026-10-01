@@ -282,7 +282,7 @@ func TestRunnerPairsPullsOnConnectAndOnWakeupInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load() error = %v", err)
 	}
-	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", testLogger())
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
@@ -346,7 +346,7 @@ func TestRunnerDoesNotReprintAfterRestartWithUnackedLedgerEntry(t *testing.T) {
 
 	printer := spool.NewFake(spool.PrinterInfo{Name: "POS-58", IsDefault: true})
 	cfg := &config.Config{APIBaseURL: srv.URL, Token: "tok-1", AgentID: "a1", Name: "Caja"}
-	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", testLogger())
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
@@ -392,7 +392,7 @@ func TestRunnerUnauthorizedClearsTokenAndReturnsToUnpaired(t *testing.T) {
 		t.Fatalf("seed config.Save() error = %v", err)
 	}
 
-	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", testLogger())
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, printer, nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
@@ -409,6 +409,74 @@ func TestRunnerUnauthorizedClearsTokenAndReturnsToUnpaired(t *testing.T) {
 	}
 	if reloaded.Token != "" || reloaded.AgentID != "" {
 		t.Fatalf("expected token/agentId cleared on disk, got %+v", reloaded)
+	}
+	// Regression: APIBaseURL used to survive this clear, so a revoked
+	// token's saved base (e.g. a LAN test build's API) would be preferred
+	// over the compiled-in default on the next pairing attempt.
+	if reloaded.APIBaseURL != "" {
+		t.Fatalf("expected APIBaseURL cleared on disk after a 401, got %+v", reloaded)
+	}
+	if got := runner.APIBase(); got != "https://api.libibot.com/api" {
+		t.Fatalf("APIBase() after 401 = %q, want the compiled-in default", got)
+	}
+}
+
+func TestRunnerAPIBaseUsesSavedBaseWhilePaired(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{APIBaseURL: "http://192.168.1.19:3001/api", Token: "tok-1", AgentID: "a1", Name: "Caja"}
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, spool.NewFake(), nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if got := runner.APIBase(); got != "http://192.168.1.19:3001/api" {
+		t.Fatalf("APIBase() = %q, want the saved base while paired", got)
+	}
+}
+
+func TestRunnerAPIBaseFallsBackToDefaultWhenUnpairedDespiteStaleSavedBase(t *testing.T) {
+	dir := t.TempDir()
+	// Unpaired (no token/agentId) but still carrying a stale APIBaseURL,
+	// e.g. a config file left over from a prior build before this fix.
+	cfg := &config.Config{APIBaseURL: "http://192.168.1.19:3001/api"}
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, spool.NewFake(), nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if got := runner.APIBase(); got != "https://api.libibot.com/api" {
+		t.Fatalf("APIBase() = %q, want the compiled-in default when unpaired", got)
+	}
+}
+
+func TestRunnerUnpairClearsAPIBaseURLAndSubsequentPairUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LIBI_PRINT_AGENT_DIR", dir)
+
+	cfg := &config.Config{APIBaseURL: "http://192.168.1.19:3001/api", Token: "tok-1", AgentID: "a1", Name: "Caja"}
+	runner, err := NewRunner(dir, cfg, config.PlainProtector{}, spool.NewFake(), nil, "1.0.0-test", "https://api.libibot.com/api", testLogger())
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if got := runner.APIBase(); got != "http://192.168.1.19:3001/api" {
+		t.Fatalf("APIBase() before Unpair() = %q, want the saved base", got)
+	}
+
+	if err := runner.Unpair(); err != nil {
+		t.Fatalf("Unpair() error = %v", err)
+	}
+
+	// The in-memory runner must now resolve to the default - this is what a
+	// subsequent pairing attempt in the same process (e.g. via the status
+	// page) would use (ui.Server.handlePair calls runner.APIBase()).
+	if got := runner.APIBase(); got != "https://api.libibot.com/api" {
+		t.Fatalf("APIBase() after Unpair() = %q, want the compiled-in default", got)
+	}
+
+	reloaded, err := config.Load(config.PlainProtector{})
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	if reloaded.APIBaseURL != "" {
+		t.Fatalf("expected APIBaseURL cleared on disk after Unpair(), got %+v", reloaded)
 	}
 }
 

@@ -147,7 +147,7 @@ func run(args []string) error {
 	)
 
 	printer := spool.New()
-	runner, err := agent.NewRunner(dir, cfg, config.NewDPAPIProtector(), printer, &http.Client{}, version, logger)
+	runner, err := agent.NewRunner(dir, cfg, config.NewDPAPIProtector(), printer, &http.Client{}, version, defaultAPIBase, logger)
 	if err != nil {
 		return fmt.Errorf("set up agent: %w", err)
 	}
@@ -155,10 +155,12 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	apiBase := defaultAPIBase
-	if cfg.APIBaseURL != "" {
-		apiBase = cfg.APIBaseURL
-	}
+	// apiBase is the effective API base at this moment (config.EffectiveAPIBase:
+	// the saved base only while actually paired, else this build's compiled-in
+	// default - see runner.APIBase, which callers that run later in the
+	// process, such as the UI's pairing handler and the update checker, use
+	// instead of this snapshot so they never act on a stale value).
+	apiBase := config.EffectiveAPIBase(cfg, defaultAPIBase)
 
 	if *pairCode != "" {
 		pairAPIBase := *apiURL
@@ -174,7 +176,7 @@ func run(args []string) error {
 		apiBase = pairAPIBase
 	}
 
-	uiServer, err := ui.New(runnerUIAdapter{runner}, apiBase, version, logger)
+	uiServer, err := ui.New(runnerUIAdapter{runner}, version, logger)
 	if err != nil {
 		return fmt.Errorf("set up status page: %w", err)
 	}
@@ -208,7 +210,7 @@ func run(args []string) error {
 	}
 
 	if exePath != "" {
-		versionClient := api.NewClient(apiBase, &http.Client{})
+		versionClient := &apiBaseVersionChecker{client: api.NewClient(apiBase, &http.Client{}), base: runner.APIBase}
 		requireSig := requireSignature != "false"
 		updater := update.NewUpdater(versionClient, &http.Client{}, version, exePath, requireSig, runner.Busy, logger)
 		go runUpdateLoop(ctx, updater, stop)
@@ -246,6 +248,22 @@ func run(args []string) error {
 	}()
 
 	return t.Loop(ctx)
+}
+
+// apiBaseVersionChecker wraps an *api.Client so the update checker follows
+// the effective API base (runner.APIBase: the paired server's saved base, or
+// this build's compiled-in default) on every check, rather than the single
+// value resolved once when the client was constructed at startup. Without
+// this, a pairing or unpairing that happens later in the process would never
+// be reflected in where self-update looks for new versions.
+type apiBaseVersionChecker struct {
+	client *api.Client
+	base   func() string
+}
+
+func (v *apiBaseVersionChecker) Version(ctx context.Context) (*api.VersionInfo, error) {
+	v.client.SetBaseURL(v.base())
+	return v.client.Version(ctx)
 }
 
 // runUpdateLoop checks for a newer version at startup and every

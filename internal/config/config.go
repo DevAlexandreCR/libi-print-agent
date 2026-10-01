@@ -30,6 +30,20 @@ func (c *Config) Paired() bool {
 	return c.AgentID != "" && c.Token != ""
 }
 
+// EffectiveAPIBase returns the API base URL ordinary (non-pairing) calls
+// should use: the saved APIBaseURL only while the config is actually paired,
+// since that URL is meaningful only as "the server this token belongs to" -
+// otherwise the build's compiled-in defaultAPIBase. Without this, a saved
+// APIBaseURL left over from a differently-built install (e.g. a LAN test
+// build) would survive into a production build and be preferred over its
+// own compiled-in default, even though the two no longer agree on anything.
+func EffectiveAPIBase(cfg *Config, defaultAPIBase string) string {
+	if cfg != nil && cfg.Paired() && cfg.APIBaseURL != "" {
+		return cfg.APIBaseURL
+	}
+	return defaultAPIBase
+}
+
 // fileConfig is the on-disk JSON shape. Field names match design.md D4/D8.
 type fileConfig struct {
 	APIBaseURL     string `json:"apiBaseUrl"`

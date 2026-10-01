@@ -21,6 +21,7 @@ type fakeRunner struct {
 	status       Status
 	name         string
 	hostname     string
+	apiBase      string
 	printers     []spool.PrinterInfo
 	printersErr  error
 	testPrintErr error
@@ -39,6 +40,7 @@ type pairCall struct {
 func (f *fakeRunner) Status() Status   { return f.status }
 func (f *fakeRunner) Name() string     { return f.name }
 func (f *fakeRunner) Hostname() string { return f.hostname }
+func (f *fakeRunner) APIBase() string  { return f.apiBase }
 func (f *fakeRunner) Printers() ([]spool.PrinterInfo, error) {
 	return f.printers, f.printersErr
 }
@@ -61,10 +63,15 @@ func testLogger() *slog.Logger {
 
 // newTestServer starts a real Server on a loopback listener so tests exercise
 // the actual net/http request path (Host header included), not just the
-// handlers in isolation.
-func newTestServer(t *testing.T, runner Runner) *Server {
+// handlers in isolation. It defaults runner.apiBase when the test did not set
+// one, since New no longer takes a base URL (Server resolves it fresh from
+// runner.APIBase() on every pairing attempt instead - see server.go).
+func newTestServer(t *testing.T, runner *fakeRunner) *Server {
 	t.Helper()
-	s, err := New(runner, "https://api.example.com", "test-version", testLogger())
+	if runner.apiBase == "" {
+		runner.apiBase = "https://api.example.com"
+	}
+	s, err := New(runner, "test-version", testLogger())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -231,6 +238,23 @@ func TestHandlePairSuccess(t *testing.T) {
 	call := runner.pairCalls[0]
 	if call.apiBaseURL != "https://api.example.com" || call.code != "123456" || call.name != "Caja" {
 		t.Fatalf("unexpected pair call: %+v", call)
+	}
+}
+
+func TestHandlePairResolvesAPIBaseFreshNotCachedAtConstruction(t *testing.T) {
+	// Regression: Server used to capture apiBaseURL once in New() and reuse
+	// it for every later pairing attempt. If the runner's effective base
+	// changes after construction (e.g. an in-process unpair reset it to the
+	// compiled-in default), a pairing attempt must pick up the new value
+	// rather than the one in effect when the Server was built.
+	runner := &fakeRunner{hostname: "caja-1", apiBase: "http://192.168.1.19:3001/api"}
+	s := newTestServer(t, runner)
+
+	runner.apiBase = "https://api.libibot.com/api"
+	postJSON(t, s, "/api/pair", true, pairRequest{Code: "123456", Name: "Caja"})
+
+	if len(runner.pairCalls) != 1 || runner.pairCalls[0].apiBaseURL != "https://api.libibot.com/api" {
+		t.Fatalf("expected Pair() to use the runner's current APIBase(), got %+v", runner.pairCalls)
 	}
 }
 
