@@ -2,6 +2,14 @@ package autostart
 
 import "testing"
 
+func TestRunCommandKeepsSingleBackslashes(t *testing.T) {
+	got := runCommand(`C:\Users\Ana\AppData\Local\LiBi\libi-print-agent.exe`)
+	want := `"C:\Users\Ana\AppData\Local\LiBi\libi-print-agent.exe" --autostart`
+	if got != want {
+		t.Fatalf("runCommand() = %s, want %s", got, want)
+	}
+}
+
 func TestStartupApprovedEnabled(t *testing.T) {
 	cases := []struct {
 		name        string

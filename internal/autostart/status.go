@@ -22,6 +22,13 @@ const (
 	StateMissing State = "missing"
 )
 
+// runCommand is the HKCU Run value for targetPath. Windows command lines
+// use plain double quotes with no escaping; Go's %q would double every
+// backslash and leave Explorer unable to find the exe at logon.
+func runCommand(targetPath string) string {
+	return `"` + targetPath + `" --autostart`
+}
+
 // startupApprovedEnabled interprets the first byte of the
 // StartupApproved\Run binary value Windows keeps per Run entry. This
 // encoding is observed behavior, not documented by Microsoft:

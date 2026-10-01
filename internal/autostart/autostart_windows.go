@@ -49,7 +49,7 @@ func Ensure(targetPath string, logger *slog.Logger) error {
 	// behavior - an already-paired agent never opens its status page on
 	// its own regardless of how it was started, and an unpaired one
 	// always does, since the merchant still has to pair it.
-	value := fmt.Sprintf("%q --autostart", targetPath)
+	value := runCommand(targetPath)
 	if err := key.SetStringValue(TaskName, value); err != nil {
 		return fmt.Errorf("autostart: set HKCU\\%s\\%s: %w", runKeyPath, TaskName, err)
 	}
