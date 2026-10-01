@@ -19,10 +19,12 @@ const (
 
 // New creates a structured (JSON) logger that writes to a size-rotated file
 // under dir and, for local debugging, also to stdout. dir is created if
-// missing.
-func New(dir string) (*slog.Logger, error) {
+// missing. The returned io.Closer closes the underlying log file and must be
+// closed before the process exits (or, in tests, before a t.TempDir()
+// holding the log file is removed) so no file handle is left open.
+func New(dir string) (*slog.Logger, io.Closer, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rotator := &lumberjack.Logger{
@@ -36,5 +38,5 @@ func New(dir string) (*slog.Logger, error) {
 	handler := slog.NewJSONHandler(io.MultiWriter(rotator, os.Stdout), &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	return slog.New(handler), nil
+	return slog.New(handler), rotator, nil
 }

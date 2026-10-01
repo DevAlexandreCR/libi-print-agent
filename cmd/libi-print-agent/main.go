@@ -86,10 +86,11 @@ func run(args []string) error {
 		return fmt.Errorf("resolve config dir: %w", err)
 	}
 
-	logger, err := logging.New(filepath.Join(dir, "logs"))
+	logger, logCloser, err := logging.New(filepath.Join(dir, "logs"))
 	if err != nil {
 		return fmt.Errorf("set up logging: %w", err)
 	}
+	defer logCloser.Close()
 	slog.SetDefault(logger)
 
 	// Relocate to the stable, admin-free, self-update-writable install
