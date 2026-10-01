@@ -77,6 +77,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("libi-print-agent", flag.ContinueOnError)
 	pairCode := fs.String("pair", "", "hidden: redeem this pairing code before starting (testing/support only)")
 	apiURL := fs.String("api", "", "API base URL to use with -pair, overriding the compiled-in default")
+	autostartFlag := fs.Bool("autostart", false, "hidden: set by the HKCU Run entry (internal/autostart) to identify a logon-triggered launch in logs; does not change startup behavior")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -144,6 +145,7 @@ func run(args []string) error {
 		"version", version,
 		"paired", cfg.Paired(),
 		"configDir", dir,
+		"autostart", *autostartFlag,
 	)
 
 	printer := spool.New()
@@ -201,13 +203,7 @@ func run(args []string) error {
 		_ = browser.Open(uiServer.URL())
 	}
 
-	if exePath != "" {
-		go func() {
-			if err := autostart.Ensure(exePath, logger); err != nil {
-				logger.Warn("startup-at-logon registration failed", "error", err)
-			}
-		}()
-	}
+	go ensureAutostart(logger)
 
 	if exePath != "" {
 		versionClient := &apiBaseVersionChecker{client: api.NewClient(apiBase, &http.Client{}), base: runner.APIBase}
@@ -264,6 +260,29 @@ type apiBaseVersionChecker struct {
 func (v *apiBaseVersionChecker) Version(ctx context.Context) (*api.VersionInfo, error) {
 	v.client.SetBaseURL(v.base())
 	return v.client.Version(ctx)
+}
+
+// ensureAutostart (re-)registers the HKCU Run autostart entry against the
+// stable install location (internal/install.TargetPath), never the path
+// this process happens to be running from. Resolving it fresh here (rather
+// than reusing this run's exePath) matters because install.EnsureInstalled
+// can fail to relocate and relaunch (e.g. a locked target file); in that
+// case this process keeps running from wherever it was originally launched
+// (e.g. the merchant's Downloads folder), and registering that location
+// for autostart was the bug behind "agent doesn't start after reboot" -
+// the next reboot would relaunch a copy sitting in Downloads, which the
+// merchant can delete at any time. Ensure itself already no-ops when
+// TargetPath does not exist yet, so this is safe to call unconditionally
+// on every startup.
+func ensureAutostart(logger *slog.Logger) {
+	target, err := install.TargetPath()
+	if err != nil {
+		logger.Warn("autostart: could not resolve install target path", "error", err)
+		return
+	}
+	if err := autostart.Ensure(target, logger); err != nil {
+		logger.Warn("startup-at-logon registration failed", "error", err)
+	}
 }
 
 // runUpdateLoop checks for a newer version at startup and every

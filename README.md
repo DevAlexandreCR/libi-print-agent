@@ -251,6 +251,43 @@ merchant install. To run one anyway for testing: on the SmartScreen
 warning dialog, click **"Más información"** and then **"Ejecutar de todas
 formas"**.
 
+## Autostart at logon
+
+The agent registers itself to start at Windows logon via the per-user
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value named `LiBi
+Impresion` (`internal/autostart`), pointing at the stable install location
+(`%LOCALAPPDATA%\LiBi\libi-print-agent.exe` — resolved fresh from
+`internal/install.TargetPath` on every startup, never the path the process
+happened to be launched from). This is deliberately the *only* autostart
+mechanism used: an earlier design preferred an all-users Task Scheduler
+`ONLOGON` task, falling back to this same Run key only if creating the task
+failed. That was abandoned after a field report of the agent not starting
+after a reboot — a task created via `schtasks` defaults to "start only on
+AC power" / "stop if going on batteries", so it silently never runs on a
+laptop that boots on battery, and because `schtasks` "succeeded" in that
+case, the reliable Run-key fallback never ran. HKCU Run has neither problem
+and needs no elevation.
+
+Registration is idempotent and re-applied on every startup (so a
+previously failed/partial registration self-heals), and best-effort
+removes the legacy `ONLOGON` scheduled task if one is still present, so a
+machine upgraded from that earlier version never ends up with two
+registered launchers. The logon-triggered launch passes `--autostart` —
+this only identifies a logon start in the agent's logs; it never changes
+behavior (an already-paired agent never opens its status page on its own
+regardless of how it was started, and an unpaired one always does, since
+the merchant still has to pair it).
+
+To check registration on a merchant PC: Task Manager → **Inicio**
+("Startup apps" tab on Windows 11) should list **LiBi Impresión** as
+Enabled. The agent's own status page also shows this under **"Inicio
+automático"** (Activado / Desactivado en el Administrador de tareas / No
+registrado — backed by `internal/autostart.Status()` and the `autostart`
+field of `GET /api/status`); if the user disabled it from Task Manager,
+Windows keeps a separate `StartupApproved\Run` flag recording that, which
+the agent detects and surfaces rather than silently re-registering over
+it.
+
 ## On-site diagnostics
 
 Hidden CLI flags for support and for the D11 discovery checklist (run

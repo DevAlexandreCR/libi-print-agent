@@ -193,6 +193,23 @@ func TestHandleStatusUnpaired(t *testing.T) {
 	}
 }
 
+func TestHandleStatusIncludesAutostart(t *testing.T) {
+	// autostart.Status()'s non-Windows stub always reports "missing" (see
+	// internal/autostart/autostart_other.go), which is what this test
+	// environment runs under; the Windows build is covered by
+	// internal/autostart's own tests plus vet-windows type-checking the
+	// registry code.
+	runner := &fakeRunner{hostname: "caja-1"}
+	s := newTestServer(t, runner)
+
+	resp := get(t, s, "/api/status", true)
+	var out statusResponse
+	decodeJSON(t, resp, &out)
+	if out.Autostart != "missing" {
+		t.Fatalf("autostart = %q, want %q", out.Autostart, "missing")
+	}
+}
+
 func TestHandleStatusPairedIncludesPrinters(t *testing.T) {
 	now := time.Now()
 	runner := &fakeRunner{

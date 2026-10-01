@@ -23,6 +23,7 @@
     --libi-success-bg: #eef7ef;
     --libi-danger: #b23a26;
     --libi-danger-bg: #fbeee9;
+    --libi-warning-bg: rgba(157, 86, 16, 0.12);
     --libi-radius: 14px;
     --libi-radius-sm: 8px;
     --libi-shadow: 0 10px 30px rgba(32, 23, 9, 0.12), 0 2px 6px rgba(32, 23, 9, 0.06);
@@ -41,6 +42,7 @@
       --libi-success-bg: rgba(37, 211, 102, 0.14);
       --libi-danger: #e8503a;
       --libi-danger-bg: rgba(232, 80, 58, 0.16);
+      --libi-warning-bg: rgba(240, 162, 60, 0.16);
       --libi-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
     }
   }
@@ -182,6 +184,10 @@
   .status-pill.connected .dot { background: var(--libi-success); }
   .status-pill.disconnected { background: var(--libi-danger-bg); color: var(--libi-danger); }
   .status-pill.disconnected .dot { background: var(--libi-danger); }
+  .status-pill.warning { background: var(--libi-warning-bg); color: var(--libi-primary); }
+  .status-pill.warning .dot { background: var(--libi-primary); }
+  .status-pill.neutral { background: var(--libi-bg); color: var(--libi-text-muted); border: 1px solid var(--libi-border); }
+  .status-pill.neutral .dot { background: var(--libi-text-muted); }
   .printer-list {
     display: flex;
     flex-wrap: wrap;
@@ -325,6 +331,16 @@
     });
   }
 
+  function autostartPill(state) {
+    if (state === 'enabled') {
+      return '<span class="status-pill connected"><span class="dot"></span>Activado</span>';
+    }
+    if (state === 'disabled_by_user') {
+      return '<span class="status-pill warning"><span class="dot"></span>Desactivado</span>';
+    }
+    return '<span class="status-pill neutral"><span class="dot"></span>No registrado</span>';
+  }
+
   function renderPaired(status) {
     var pillClass = status.connected ? 'connected' : 'disconnected';
     var pillText = status.connected ? 'Conectado' : 'Sin conexión';
@@ -346,6 +362,8 @@
       '<div class="row"><span class="k">Estado</span><span class="v"><span class="status-pill ' + pillClass + '"><span class="dot"></span>' + pillText + '</span></span></div>' +
       (status.connected ? '' : '<div class="hint">Último error: ' + escapeHtml(status.lastError || '—') + '</div>') +
       '<div class="row"><span class="k">Último ticket impreso</span><span class="v">' + fmtDate(status.lastPrintedAt) + '</span></div>' +
+      '<div class="row"><span class="k">Inicio automático</span><span class="v">' + autostartPill(status.autostart) + '</span></div>' +
+      (status.autostart === 'disabled_by_user' ? '<div class="hint">Desactivado en el Administrador de tareas — actívalo en Inicio.</div>' : '') +
       '<label>Impresoras</label>' +
       '<div class="printer-list">' + printerChips + '</div>' +
       '<label for="printerSelect">Probar una impresora</label>' +

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/libi/libi-print-agent/internal/api"
+	"github.com/libi/libi-print-agent/internal/autostart"
 	"github.com/libi/libi-print-agent/internal/spool"
 )
 
@@ -187,6 +188,12 @@ type statusResponse struct {
 	Hostname      string        `json:"hostname"`
 	Version       string        `json:"version,omitempty"`
 	Printers      []printerJSON `json:"printers"`
+	// Autostart is one of autostart.State's values ("enabled",
+	// "disabled_by_user", "missing"); see autostart.Status. On a read
+	// error it is left as "" rather than failing the whole status
+	// response - the page's JS treats anything but "enabled"/
+	// "disabled_by_user" as "not registered".
+	Autostart string `json:"autostart"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +216,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		for _, p := range printers {
 			resp.Printers = append(resp.Printers, printerJSON{Name: p.Name, IsDefault: p.IsDefault, DriverName: p.DriverName})
 		}
+	}
+
+	if state, err := autostart.Status(); err != nil {
+		s.logger.Warn("ui: read autostart status for status page failed", "error", err)
+	} else {
+		resp.Autostart = string(state)
 	}
 
 	writeJSON(w, http.StatusOK, resp)

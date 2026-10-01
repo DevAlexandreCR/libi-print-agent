@@ -19,6 +19,14 @@ func runDiagnostics(args []string) (handled bool, err error) {
 	fs := flag.NewFlagSet("libi-print-agent", flag.ContinueOnError)
 	listPrinters := fs.Bool("list-printers", false, "print the Windows printer inventory and exit")
 	printTest := fs.String("print-test", "", "send a RAW ESC/POS test ticket to the named printer and exit")
+	// -autostart, -pair and -api belong to run() (the HKCU Run entry passes
+	// -autostart on every logon launch); they are declared here too, unused,
+	// only so this FlagSet - which always sees
+	// the full argv first, see main() - does not fail to parse it with
+	// "flag provided but not defined" before run() ever gets a chance to.
+	fs.Bool("autostart", false, "")
+	fs.String("pair", "", "")
+	fs.String("api", "", "")
 	if err := fs.Parse(args); err != nil {
 		return true, err
 	}
