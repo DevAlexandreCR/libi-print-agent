@@ -174,7 +174,7 @@ func run(args []string) error {
 		apiBase = pairAPIBase
 	}
 
-	uiServer, err := ui.New(runnerUIAdapter{runner}, apiBase, logger)
+	uiServer, err := ui.New(runnerUIAdapter{runner}, apiBase, version, logger)
 	if err != nil {
 		return fmt.Errorf("set up status page: %w", err)
 	}

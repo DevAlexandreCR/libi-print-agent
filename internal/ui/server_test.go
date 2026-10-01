@@ -64,7 +64,7 @@ func testLogger() *slog.Logger {
 // handlers in isolation.
 func newTestServer(t *testing.T, runner Runner) *Server {
 	t.Helper()
-	s, err := New(runner, "https://api.example.com", testLogger())
+	s, err := New(runner, "https://api.example.com", "test-version", testLogger())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -204,6 +204,9 @@ func TestHandleStatusPairedIncludesPrinters(t *testing.T) {
 	}
 	if out.Name != "Caja" {
 		t.Fatalf("name = %q, want Caja", out.Name)
+	}
+	if out.Version != "test-version" {
+		t.Fatalf("version = %q, want test-version", out.Version)
 	}
 	if len(out.Printers) != 2 || !out.Printers[0].IsDefault {
 		t.Fatalf("unexpected printers: %+v", out.Printers)

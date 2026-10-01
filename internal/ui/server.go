@@ -56,6 +56,7 @@ type Status struct {
 type Server struct {
 	runner     Runner
 	apiBaseURL string
+	version    string
 	logger     *slog.Logger
 	token      string
 
@@ -66,8 +67,11 @@ type Server struct {
 
 // New builds a Server with a fresh random token. apiBaseURL is the base URL
 // used for a pairing attempt from the page (the build's compiled-in
-// default, or whatever is already in the agent's config).
-func New(runner Runner, apiBaseURL string, logger *slog.Logger) (*Server, error) {
+// default, or whatever is already in the agent's config). version is the
+// build's version string (main.version, "dev" if unset at build time);
+// surfaced read-only in /api/status so the status page's footer can show
+// which build is running.
+func New(runner Runner, apiBaseURL, version string, logger *slog.Logger) (*Server, error) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, fmt.Errorf("ui: generate token: %w", err)
@@ -76,6 +80,7 @@ func New(runner Runner, apiBaseURL string, logger *slog.Logger) (*Server, error)
 	s := &Server{
 		runner:     runner,
 		apiBaseURL: apiBaseURL,
+		version:    version,
 		logger:     logger,
 		token:      hex.EncodeToString(tokenBytes),
 	}
@@ -177,6 +182,7 @@ type statusResponse struct {
 	LastPrintedAt string        `json:"lastPrintedAt,omitempty"`
 	Name          string        `json:"name,omitempty"`
 	Hostname      string        `json:"hostname"`
+	Version       string        `json:"version,omitempty"`
 	Printers      []printerJSON `json:"printers"`
 }
 
@@ -188,6 +194,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastError: st.LastError,
 		Name:      s.runner.Name(),
 		Hostname:  s.runner.Hostname(),
+		Version:   s.version,
 	}
 	if !st.LastPrintedAt.IsZero() {
 		resp.LastPrintedAt = st.LastPrintedAt.Format(time.RFC3339)

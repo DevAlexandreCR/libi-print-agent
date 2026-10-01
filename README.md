@@ -101,6 +101,24 @@ icon.
   base64 -i .logo64.png | tr -d '\n'   # paste into both data URIs in index.html, then rm .logo64.png
   ```
 
+  **Verify the pasted string before committing** - a partial copy/paste
+  (truncated clipboard, a line-wrap eaten by an editor, etc.) still produces
+  a syntactically valid `data:` URI that silently renders as a blank image,
+  with no build or test failure to catch it (this happened once already).
+  Decode what ended up in the file and confirm it is still a valid,
+  correctly-sized PNG:
+
+  ```bash
+  python3 -c "
+  import re, base64
+  html = open('internal/ui/assets/index.html').read()
+  for m in re.findall(r'data:image/png;base64,([A-Za-z0-9+/=]+)', html):
+      data = base64.b64decode(m)
+      assert data[:8] == b'\x89PNG\r\n\x1a\n', 'not a valid PNG'
+      print(len(data), 'bytes OK')
+  "
+  ```
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request, on
