@@ -6,8 +6,10 @@
 // it still cross-compiles from this repo's Linux/macOS build containers),
 // per design.md D8's explicit fallback: "if none [pure-Go tray lib] builds
 // without cgo for windows, implement minimal Shell_NotifyIcon via
-// x/sys/windows". Icons are generated at runtime (CreateIcon over a solid
-// color) rather than embedded .ico assets.
+// x/sys/windows". Icons are the LiBi brand logo with a small status dot
+// baked in, generated ahead of time by tools/genicons into
+// internal/tray/icons/*.ico and embedded via go:embed (icon_assets.go);
+// icon_windows.go decodes them into HICONs with CreateIconFromResourceEx.
 package tray
 
 // State is the tray icon's visual state.

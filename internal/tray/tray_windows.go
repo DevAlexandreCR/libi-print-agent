@@ -190,9 +190,9 @@ func New(cb Callbacks) (*Tray, error) {
 	tid, _, _ := procGetCurrentThreadId.Call()
 	t.threadID = uint32(tid)
 
+	desired := desiredIconSize()
 	for _, s := range []State{StateUnpaired, StateDisconnected, StateConnected} {
-		c := stateColors[s]
-		icon, err := createSolidIcon(c[0], c[1], c[2])
+		icon, err := loadIcon(s, desired)
 		if err != nil {
 			return nil, err
 		}

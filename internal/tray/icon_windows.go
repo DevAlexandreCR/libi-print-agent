@@ -9,41 +9,59 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const iconSize = 16
+// smCxsmicon is GetSystemMetrics' index for the system's small-icon width
+// (winuser.h SM_CXSMICON), the size Explorer/the taskbar actually draws a
+// Shell_NotifyIcon tray icon at. It already accounts for the user's display
+// scaling (16px at 100%, 20 at 125%, 24 at 150%, 32 at 200%, ...), which is
+// why loadIcon below queries it instead of hardcoding 16.
+const smCxsmicon = 49
 
 var (
-	modUser32       = windows.NewLazySystemDLL("user32.dll")
-	procCreateIcon  = modUser32.NewProc("CreateIcon")
-	procDestroyIcon = modUser32.NewProc("DestroyIcon")
+	modUser32 = windows.NewLazySystemDLL("user32.dll")
+
+	procGetSystemMetrics         = modUser32.NewProc("GetSystemMetrics")
+	procCreateIconFromResourceEx = modUser32.NewProc("CreateIconFromResourceEx")
+	procDestroyIcon              = modUser32.NewProc("DestroyIcon")
 )
 
-// createSolidIcon builds a small opaque square icon of the given color via
-// CreateIcon (no .ico asset needed - see package doc). AND mask all-zero +
-// a 32bpp XOR bitmap with alpha=0xFF is the standard way to get a plain
-// opaque color icon out of CreateIcon without a bitmap resource.
-func createSolidIcon(r, g, b byte) (windows.Handle, error) {
-	andMaskSize := ((iconSize + 7) / 8) * iconSize
-	andMask := make([]byte, andMaskSize)
-
-	xorMask := make([]byte, iconSize*iconSize*4)
-	for i := 0; i < iconSize*iconSize; i++ {
-		xorMask[i*4+0] = b
-		xorMask[i*4+1] = g
-		xorMask[i*4+2] = r
-		xorMask[i*4+3] = 0xFF
+// desiredIconSize returns the system's current small-icon size via
+// GetSystemMetrics(SM_CXSMICON), falling back to 16 if the call ever
+// returns something nonsensical.
+func desiredIconSize() int {
+	r, _, _ := procGetSystemMetrics.Call(uintptr(smCxsmicon))
+	size := int(int32(r))
+	if size <= 0 {
+		return 16
 	}
+	return size
+}
 
-	h, _, err := procCreateIcon.Call(
-		0, // hInstance: unused by CreateIcon beyond bookkeeping
-		uintptr(iconSize),
-		uintptr(iconSize),
-		1,  // cPlanes
-		32, // cBitsPixel
-		uintptr(unsafe.Pointer(&andMask[0])),
-		uintptr(unsafe.Pointer(&xorMask[0])),
+// loadIcon decodes the embedded .ico for state s and builds an HICON sized
+// for desired (see desiredIconSize), via CreateIconFromResourceEx - the
+// same API Windows' own icon loader uses once it has picked a directory
+// entry (LookupIconIdFromDirectoryEx's usual partner call). Picking the
+// entry ourselves (selectIcoImage) rather than calling
+// LookupIconIdFromDirectoryEx keeps the whole selection path testable on
+// any OS (see icon_assets_test.go), since we fully control the .ico layout
+// end to end (tools/genicons writes it, this package reads it).
+func loadIcon(s State, desired int) (windows.Handle, error) {
+	images, err := parseICO(icoDataFor(s))
+	if err != nil {
+		return 0, fmt.Errorf("tray: parse embedded icon: %w", err)
+	}
+	img := selectIcoImage(images, desired)
+
+	h, _, err := procCreateIconFromResourceEx.Call(
+		uintptr(unsafe.Pointer(&img.Data[0])),
+		uintptr(len(img.Data)),
+		1,          // fIcon = TRUE (icon, not cursor)
+		0x00030000, // dwVer: icon resource format version 3
+		uintptr(img.Width),
+		uintptr(img.Height),
+		0, // flags: LR_DEFAULTCOLOR
 	)
 	if h == 0 {
-		return 0, fmt.Errorf("tray: CreateIcon: %w", err)
+		return 0, fmt.Errorf("tray: CreateIconFromResourceEx: %w", err)
 	}
 	return windows.Handle(h), nil
 }
@@ -52,13 +70,4 @@ func destroyIcon(h windows.Handle) {
 	if h != 0 {
 		procDestroyIcon.Call(uintptr(h))
 	}
-}
-
-// stateColors maps each State to its icon's RGB color: green for
-// connected, red/orange for disconnected (paired but not reachable), gray
-// for unpaired.
-var stateColors = map[State][3]byte{
-	StateConnected:    {0x16, 0xa3, 0x4a}, // green
-	StateDisconnected: {0xdc, 0x26, 0x26}, // red
-	StateUnpaired:     {0x94, 0xa3, 0xb8}, // gray
 }

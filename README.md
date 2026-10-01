@@ -38,6 +38,69 @@ considerations in mind: the binary is built with `CGO_ENABLED=0` (default
 in `scripts/build.sh`) so cross-compilation from macOS/Linux works without
 a C toolchain.
 
+## Tray icon and .exe icon
+
+The tray icon (`internal/tray/icons/*.ico`) and the `.exe`'s own file icon
+are generated, committed files - CI never runs the generator, so a broken
+or missing Go toolchain on a release runner can't silently ship a blank
+icon.
+
+- **Source logo:** `assets/brand/icon.png` (512x512), a copy of the main
+  `libi` repo's `libi-web/public/brand/icon.png`. Update it there and
+  re-copy here if the brand logo ever changes.
+- **Tray icons:** `tools/genicons` reads the source logo and writes
+  `internal/tray/icons/{app,connected,disconnected,unpaired}.ico` - each a
+  multi-resolution (16/20/24/32/40/48/64/256px), PNG-compressed `.ico`.
+  `connected`/`disconnected`/`unpaired` additionally bake in a small status
+  dot; `app` is the plain logo. Regenerate after changing the logo or the
+  dot styling in `tools/genicons/main.go`:
+
+  ```bash
+  docker run --rm -v "$PWD":/src -w /src golang:1.23 \
+    go run ./tools/genicons
+  ```
+
+  Useful flags: `-preview-dir <dir>` also writes a loose PNG per
+  (icon, size) for visually checking crispness at small sizes;
+  `-logo-png <path> -logo-size <n>` writes a single plain-logo PNG at size
+  `n` (used below for the `.exe` icon source and the status page's inline
+  logo).
+
+- **`.exe` icon + version info:** `cmd/libi-print-agent/winres.json`
+  (consumed by [go-winres](https://github.com/tc-hib/go-winres)) points at
+  `cmd/libi-print-agent/appicon.png` (a plain 256px logo PNG, also
+  committed) and sets the version-info resource (`ProductName`,
+  `CompanyName`, `FileDescription`). `go build` picks up the committed
+  `cmd/libi-print-agent/rsrc_windows_amd64.syso` automatically via Go's
+  `_GOOS_GOARCH.syso` naming convention - nothing in `scripts/build.sh` or
+  the CI/release workflows needs to change. Regenerate both after editing
+  `winres.json` or the logo:
+
+  ```bash
+  docker run --rm -v "$PWD":/src -w /src golang:1.23 \
+    go run ./tools/genicons -logo-png cmd/libi-print-agent/appicon.png -logo-size 256
+
+  docker run --rm -v "$PWD":/src -w /src/cmd/libi-print-agent golang:1.23 \
+    go run github.com/tc-hib/go-winres@v0.3.3 make --in winres.json --out rsrc --arch amd64
+  ```
+
+  Verify the resource actually landed in a build with `go tool nm` or by
+  checking the `.exe` grows a `.rsrc` PE section (`go build -o /dev/null`
+  won't show this; inspect `dist/libi-print-agent.exe` after
+  `make build-windows`, e.g. via `debug/pe` or `strings -e l
+  dist/libi-print-agent.exe | grep -i FileDescription`).
+
+- **Status page logo:** `internal/ui/assets/index.html` inlines the
+  favicon and header logo as `data:image/png;base64,...` URIs (no separate
+  asset file, to keep the page a single embeddable file). Regenerate the
+  source PNG and re-inline it by hand if the logo changes:
+
+  ```bash
+  docker run --rm -v "$PWD":/src -w /src golang:1.23 \
+    go run ./tools/genicons -logo-png /src/.logo64.png -logo-size 64
+  base64 -i .logo64.png | tr -d '\n'   # paste into both data URIs in index.html, then rm .logo64.png
+  ```
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request, on
